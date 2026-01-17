@@ -481,52 +481,78 @@ export async function publishArticle(options: ArticleOptions): Promise<void> {
         const img = sortedImages[i]!;
         console.log(`[x-article] [${i + 1}/${sortedImages.length}] Inserting image at placeholder: ${img.placeholder}`);
 
-        // Find, scroll to, and select the placeholder text in DraftEditor
-        const placeholderFound = await cdp.send<{ result: { value: boolean } }>('Runtime.evaluate', {
-          expression: `(() => {
-            const editor = document.querySelector('.DraftEditor-editorContainer [data-contents="true"]');
-            if (!editor) return false;
+        // Helper to select placeholder with retry
+        const selectPlaceholder = async (maxRetries = 3): Promise<boolean> => {
+          for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            // Find, scroll to, and select the placeholder text in DraftEditor
+            await cdp!.send('Runtime.evaluate', {
+              expression: `(() => {
+                const editor = document.querySelector('.DraftEditor-editorContainer [data-contents="true"]');
+                if (!editor) return false;
 
-            const placeholder = ${JSON.stringify(img.placeholder)};
+                const placeholder = ${JSON.stringify(img.placeholder)};
 
-            // Search through all text nodes in the editor
-            const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null, false);
-            let node;
+                // Search through all text nodes in the editor
+                const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null, false);
+                let node;
 
-            while ((node = walker.nextNode())) {
-              const text = node.textContent || '';
-              const idx = text.indexOf(placeholder);
-              if (idx !== -1) {
-                // Found the placeholder - scroll to it first
-                const parentElement = node.parentElement;
-                if (parentElement) {
-                  parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                while ((node = walker.nextNode())) {
+                  const text = node.textContent || '';
+                  const idx = text.indexOf(placeholder);
+                  if (idx !== -1) {
+                    // Found the placeholder - scroll to it first
+                    const parentElement = node.parentElement;
+                    if (parentElement) {
+                      parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+
+                    // Select it
+                    const range = document.createRange();
+                    range.setStart(node, idx);
+                    range.setEnd(node, idx + placeholder.length);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    return true;
+                  }
                 }
+                return false;
+              })()`,
+            }, { sessionId });
 
-                // Select it
-                const range = document.createRange();
-                range.setStart(node, idx);
-                range.setEnd(node, idx + placeholder.length);
-                const sel = window.getSelection();
-                sel.removeAllRanges();
-                sel.addRange(range);
-                return true;
-              }
+            // Wait for scroll and selection to settle
+            await sleep(800);
+
+            // Verify selection matches the placeholder
+            const selectionCheck = await cdp!.send<{ result: { value: string } }>('Runtime.evaluate', {
+              expression: `window.getSelection()?.toString() || ''`,
+              returnByValue: true,
+            }, { sessionId });
+
+            const selectedText = selectionCheck.result.value.trim();
+            if (selectedText === img.placeholder) {
+              console.log(`[x-article] Selection verified: "${selectedText}"`);
+              return true;
             }
-            return false;
-          })()`,
-          returnByValue: true,
-        }, { sessionId });
 
-        // Wait for scroll animation
-        await sleep(500);
+            if (attempt < maxRetries) {
+              console.log(`[x-article] Selection attempt ${attempt} got "${selectedText}", retrying...`);
+              await sleep(500);
+            } else {
+              console.warn(`[x-article] Selection failed after ${maxRetries} attempts, got: "${selectedText}"`);
+            }
+          }
+          return false;
+        };
 
-        if (!placeholderFound.result.value) {
-          console.warn(`[x-article] Placeholder not found in DOM: ${img.placeholder}`);
+        // Try to select the placeholder
+        const selected = await selectPlaceholder(3);
+        if (!selected) {
+          console.warn(`[x-article] Skipping image - could not select placeholder: ${img.placeholder}`);
           continue;
         }
 
-        console.log(`[x-article] Placeholder selected, copying image: ${path.basename(img.localPath)}`);
+        console.log(`[x-article] Copying image: ${path.basename(img.localPath)}`);
 
         // Copy image to clipboard
         if (!copyImageToClipboard(img.localPath)) {
@@ -535,17 +561,48 @@ export async function publishArticle(options: ArticleOptions): Promise<void> {
         }
 
         // Wait for clipboard to be fully ready
-        await sleep(800);
+        await sleep(1000);
 
-        // Delete placeholder by pressing Enter (placeholder is already selected)
-        console.log(`[x-article] Deleting placeholder with Enter...`);
-        await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, { sessionId });
-        await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, { sessionId });
+        // Delete placeholder by pressing Backspace (more reliable than Enter for replacing selection)
+        console.log(`[x-article] Deleting placeholder...`);
+        await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 }, { sessionId });
+        await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 }, { sessionId });
+
+        // Wait and verify placeholder is deleted
+        await sleep(500);
+
+        // Check that placeholder is no longer in editor
+        const afterDelete = await cdp.send<{ result: { value: boolean } }>('Runtime.evaluate', {
+          expression: `(() => {
+            const editor = document.querySelector('.DraftEditor-editorContainer [data-contents="true"]');
+            if (!editor) return true;
+            return !editor.innerText.includes(${JSON.stringify(img.placeholder)});
+          })()`,
+          returnByValue: true,
+        }, { sessionId });
+
+        if (!afterDelete.result.value) {
+          console.warn(`[x-article] Placeholder may not have been deleted, trying again...`);
+          // Try selecting and deleting again
+          await selectPlaceholder(1);
+          await sleep(300);
+          await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 }, { sessionId });
+          await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 }, { sessionId });
+          await sleep(500);
+        }
+
+        // Focus editor to ensure cursor is in position
+        await cdp.send('Runtime.evaluate', {
+          expression: `(() => {
+            const editor = document.querySelector('.DraftEditor-editorContainer [contenteditable="true"]');
+            if (editor) editor.focus();
+          })()`,
+        }, { sessionId });
         await sleep(300);
 
         // Paste image using paste script (activates Chrome, sends real keystroke)
         console.log(`[x-article] Pasting image...`);
-        if (pasteFromClipboard('Google Chrome', 5, 800)) {
+        if (pasteFromClipboard('Google Chrome', 5, 1000)) {
           console.log(`[x-article] Image pasted: ${path.basename(img.localPath)}`);
         } else {
           console.warn(`[x-article] Failed to paste image after retries`);
