@@ -2,6 +2,11 @@
 
 [English](./CHANGELOG.md) | 中文
 
+## 0.8.1 - 2026-01-17
+
+### 重构
+- `baoyu-gemini-web`：重构脚本架构——将 10 个分散的脚本文件整合为结构化的 `gemini-webapi/` 模块（gemini_webapi Python 库的 TypeScript 移植版）。
+
 ## 0.8.0 - 2026-01-17
 
 ### 新功能

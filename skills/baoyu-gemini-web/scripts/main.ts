@@ -1,21 +1,65 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 
-import { fetchGeminiAccessToken, runGeminiWebWithFallback, saveFirstGeminiImageFromOutput } from './client.js';
-import { getGeminiCookieMapViaChrome } from './chrome-auth.js';
-import {
-  hasRequiredGeminiCookies,
-  readGeminiCookieMapFromDisk,
-  writeGeminiCookieMapToDisk,
-} from './cookie-store.js';
-import { resolveGeminiWebChromeProfileDir, resolveGeminiWebCookiePath } from './paths.js';
-import { readSession, writeSession, listSessions } from './session-store.js';
+import { GeminiClient, GeneratedImage, Model, type ModelOutput } from './gemini-webapi/index.js';
+import { resolveGeminiWebChromeProfileDir, resolveGeminiWebCookiePath, resolveGeminiWebSessionPath, resolveGeminiWebSessionsDir } from './gemini-webapi/utils/index.js';
 
-function printUsage(exitCode = 0): never {
-  const cookiePath = resolveGeminiWebCookiePath();
-  const profileDir = resolveGeminiWebChromeProfileDir();
+type CliArgs = {
+  prompt: string | null;
+  promptFiles: string[];
+  modelId: string;
+  json: boolean;
+  imagePath: string | null;
+  referenceImages: string[];
+  sessionId: string | null;
+  listSessions: boolean;
+  login: boolean;
+  cookiePath: string | null;
+  profileDir: string | null;
+  help: boolean;
+};
 
+type SessionRecord = {
+  id: string;
+  metadata: Array<string | null>;
+  messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string; error?: string }>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type LegacySessionV1 = {
+  version?: number;
+  sessionId?: string;
+  updatedAt?: string;
+  conversationId?: string | null;
+  responseId?: string | null;
+  choiceId?: string | null;
+  chatMetadata?: unknown;
+};
+
+function normalizeSessionMetadata(input: unknown): Array<string | null> {
+  if (Array.isArray(input)) {
+    const out: Array<string | null> = [];
+    for (const v of input.slice(0, 3)) out.push(typeof v === 'string' ? v : null);
+    return out.length > 0 ? out : [null, null, null];
+  }
+
+  if (input && typeof input === 'object') {
+    const v1 = input as LegacySessionV1;
+    if (Array.isArray(v1.chatMetadata)) return normalizeSessionMetadata(v1.chatMetadata);
+
+    const conv = typeof v1.conversationId === 'string' ? v1.conversationId : null;
+    const rid = typeof v1.responseId === 'string' ? v1.responseId : null;
+    const rcid = typeof v1.choiceId === 'string' ? v1.choiceId : null;
+    if (conv || rid || rcid) return [conv, rid, rcid];
+  }
+
+  return [null, null, null];
+}
+
+function printUsage(cookiePath: string, profileDir: string): void {
   console.log(`Usage:
   npx -y bun skills/baoyu-gemini-web/scripts/main.ts --prompt "Hello"
   npx -y bun skills/baoyu-gemini-web/scripts/main.ts "Hello"
@@ -33,6 +77,7 @@ Options:
   --json                    Output JSON
   --image [path]            Generate an image and save it (default: ./generated.png)
   --reference <files...>    Reference images for vision input
+  --ref <files...>          Alias for --reference
   --sessionId <id>          Session ID for multi-turn conversation (agent should generate unique ID)
   --list-sessions           List saved sessions (max 100, sorted by update time)
   --login                   Only refresh cookies, then exit
@@ -41,405 +86,405 @@ Options:
   -h, --help                Show help
 
 Env overrides:
-  GEMINI_WEB_DATA_DIR, GEMINI_WEB_COOKIE_PATH, GEMINI_WEB_CHROME_PROFILE_DIR, GEMINI_WEB_CHROME_PATH
-`);
-
-  process.exit(exitCode);
+  GEMINI_WEB_DATA_DIR, GEMINI_WEB_COOKIE_PATH, GEMINI_WEB_CHROME_PROFILE_DIR, GEMINI_WEB_CHROME_PATH`);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+function parseArgs(argv: string[]): CliArgs {
+  const out: CliArgs = {
+    prompt: null,
+    promptFiles: [],
+    modelId: 'gemini-3-pro',
+    json: false,
+    imagePath: null,
+    referenceImages: [],
+    sessionId: null,
+    listSessions: false,
+    login: false,
+    cookiePath: null,
+    profileDir: null,
+    help: false,
+  };
 
-async function readPromptFromStdin(): Promise<string | null> {
-  if (process.stdin.isTTY) return null;
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const text = Buffer.concat(chunks).toString('utf8').trim();
-  return text ? text : null;
-}
-
-function readPromptFiles(filePaths: string[]): string {
-  const contents: string[] = [];
-  for (const filePath of filePaths) {
-    const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
-    if (!fs.existsSync(resolved)) {
-      throw new Error(`Prompt file not found: ${resolved}`);
-    }
-    const content = fs.readFileSync(resolved, 'utf8').trim();
-    contents.push(content);
-  }
-  return contents.join('\n\n');
-}
-
-function parseArgs(argv: string[]): {
-  prompt?: string;
-  promptFiles?: string[];
-  model?: string;
-  json?: boolean;
-  imagePath?: string;
-  loginOnly?: boolean;
-  cookiePath?: string;
-  profileDir?: string;
-  referenceImages?: string[];
-  sessionId?: string;
-  listSessions?: boolean;
-} {
-  const out: ReturnType<typeof parseArgs> = {};
   const positional: string[] = [];
 
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i] ?? '';
-    if (arg === '--help' || arg === '-h') printUsage(0);
-    if (arg === '--json') {
+  const takeMany = (i: number): { items: string[]; next: number } => {
+    const items: string[] = [];
+    let j = i + 1;
+    while (j < argv.length) {
+      const v = argv[j]!;
+      if (v.startsWith('-')) break;
+      items.push(v);
+      j++;
+    }
+    return { items, next: j - 1 };
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+
+    if (a === '--help' || a === '-h') {
+      out.help = true;
+      continue;
+    }
+
+    if (a === '--json') {
       out.json = true;
       continue;
     }
-    if (arg === '--image' || arg === '--generate-image') {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('-')) {
-        out.imagePath = next;
-        i += 1;
-      } else {
-        out.imagePath = 'generated.png';
-      }
-      continue;
-    }
-    if (arg.startsWith('--image=')) {
-      out.imagePath = arg.slice('--image='.length);
-      continue;
-    }
-    if (arg.startsWith('--generate-image=')) {
-      out.imagePath = arg.slice('--generate-image='.length);
-      continue;
-    }
-    if (arg === '--login') {
-      out.loginOnly = true;
-      continue;
-    }
-    if (arg === '--prompt' || arg === '-p') {
-      out.prompt = argv[i + 1] ?? '';
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith('--prompt=')) {
-      out.prompt = arg.slice('--prompt='.length);
-      continue;
-    }
-    if (arg === '--promptfiles') {
-      out.promptFiles = [];
-      while (i + 1 < argv.length) {
-        const next = argv[i + 1];
-        if (next && !next.startsWith('-')) {
-          out.promptFiles.push(next);
-          i += 1;
-        } else {
-          break;
-        }
-      }
-      continue;
-    }
-    if (arg === '--model' || arg === '-m') {
-      out.model = argv[i + 1] ?? '';
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith('--model=')) {
-      out.model = arg.slice('--model='.length);
-      continue;
-    }
-    if (arg === '--cookie-path') {
-      out.cookiePath = argv[i + 1] ?? '';
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith('--cookie-path=')) {
-      out.cookiePath = arg.slice('--cookie-path='.length);
-      continue;
-    }
-    if (arg === '--profile-dir') {
-      out.profileDir = argv[i + 1] ?? '';
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith('--profile-dir=')) {
-      out.profileDir = arg.slice('--profile-dir='.length);
-      continue;
-    }
-    if (arg === '--reference' || arg === '--ref') {
-      out.referenceImages = [];
-      while (i + 1 < argv.length) {
-        const next = argv[i + 1];
-        if (next && !next.startsWith('-')) {
-          out.referenceImages.push(next);
-          i += 1;
-        } else {
-          break;
-        }
-      }
-      continue;
-    }
-    if (arg === '--sessionId' || arg === '--session-id') {
-      out.sessionId = argv[i + 1] ?? '';
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith('--sessionId=') || arg.startsWith('--session-id=')) {
-      out.sessionId = arg.split('=')[1] ?? '';
-      continue;
-    }
-    if (arg === '--list-sessions') {
+
+    if (a === '--list-sessions') {
       out.listSessions = true;
       continue;
     }
 
-    if (arg.startsWith('-')) {
-      throw new Error(`Unknown option: ${arg}`);
+    if (a === '--login') {
+      out.login = true;
+      continue;
     }
-    positional.push(arg);
+
+    if (a === '--prompt' || a === '-p') {
+      const v = argv[++i];
+      if (!v) throw new Error(`Missing value for ${a}`);
+      out.prompt = v;
+      continue;
+    }
+
+    if (a === '--promptfiles') {
+      const { items, next } = takeMany(i);
+      if (items.length === 0) throw new Error('Missing files for --promptfiles');
+      out.promptFiles.push(...items);
+      i = next;
+      continue;
+    }
+
+    if (a === '--model' || a === '-m') {
+      const v = argv[++i];
+      if (!v) throw new Error(`Missing value for ${a}`);
+      out.modelId = v;
+      continue;
+    }
+
+    if (a === '--sessionId') {
+      const v = argv[++i];
+      if (!v) throw new Error('Missing value for --sessionId');
+      out.sessionId = v;
+      continue;
+    }
+
+    if (a === '--cookie-path') {
+      const v = argv[++i];
+      if (!v) throw new Error('Missing value for --cookie-path');
+      out.cookiePath = v;
+      continue;
+    }
+
+    if (a === '--profile-dir') {
+      const v = argv[++i];
+      if (!v) throw new Error('Missing value for --profile-dir');
+      out.profileDir = v;
+      continue;
+    }
+
+    if (a === '--image' || a.startsWith('--image=')) {
+      let v: string | null = null;
+      if (a.startsWith('--image=')) {
+        v = a.slice('--image='.length).trim();
+      } else {
+        const maybe = argv[i + 1];
+        if (maybe && !maybe.startsWith('-')) {
+          v = maybe;
+          i++;
+        }
+      }
+
+      out.imagePath = v && v.length > 0 ? v : 'generated.png';
+      continue;
+    }
+
+    if (a === '--reference' || a === '--ref') {
+      const { items, next } = takeMany(i);
+      if (items.length === 0) throw new Error(`Missing files for ${a}`);
+      out.referenceImages.push(...items);
+      i = next;
+      continue;
+    }
+
+    if (a.startsWith('-')) {
+      throw new Error(`Unknown option: ${a}`);
+    }
+
+    positional.push(a);
   }
 
-  if (!out.prompt && positional.length > 0) {
-    out.prompt = positional.join(' ').trim();
+  if (!out.prompt && out.promptFiles.length === 0 && positional.length > 0) {
+    out.prompt = positional.join(' ');
   }
-
-  if (out.prompt != null) out.prompt = out.prompt.trim();
-  if (out.model != null) out.model = out.model.trim();
-  if (out.imagePath != null) out.imagePath = out.imagePath.trim();
-  if (out.cookiePath != null) out.cookiePath = out.cookiePath.trim();
-  if (out.profileDir != null) out.profileDir = out.profileDir.trim();
-
-  if (out.imagePath === '') delete out.imagePath;
-  if (out.cookiePath === '') delete out.cookiePath;
-  if (out.profileDir === '') delete out.profileDir;
-  if (out.promptFiles?.length === 0) delete out.promptFiles;
-  if (out.referenceImages?.length === 0) delete out.referenceImages;
-  if (out.sessionId != null) out.sessionId = out.sessionId.trim();
-  if (out.sessionId === '') delete out.sessionId;
 
   return out;
 }
 
-async function isCookieMapValid(cookieMap: Record<string, string>): Promise<boolean> {
-  if (!hasRequiredGeminiCookies(cookieMap)) return false;
+function resolveModel(id: string): Model {
+  const k = id.trim();
+  if (k === 'gemini-3-pro') return Model.G_3_0_PRO;
+  if (k === 'gemini-3.0-pro') return Model.G_3_0_PRO;
+  if (k === 'gemini-2.5-pro') return Model.G_2_5_PRO;
+  if (k === 'gemini-2.5-flash') return Model.G_2_5_FLASH;
+  return Model.from_name(k);
+}
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30_000);
+async function readPromptFromFiles(files: string[]): Promise<string> {
+  const parts: string[] = [];
+  for (const f of files) {
+    parts.push(await readFile(f, 'utf8'));
+  }
+  return parts.join('\n\n');
+}
+
+async function readPromptFromStdin(): Promise<string | null> {
+  if (process.stdin.isTTY) return null;
   try {
-    await fetchGeminiAccessToken(cookieMap, controller.signal);
-    return true;
+    // Bun provides Bun.stdin; Node-compatible read can be flaky across runtimes.
+    const t = await Bun.stdin.text();
+    const v = t.trim();
+    return v.length > 0 ? v : null;
   } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
+    return null;
   }
 }
 
-async function ensureGeminiCookieMap(options: {
-  cookiePath: string;
-  profileDir: string;
-}): Promise<Record<string, string>> {
-  const log = (msg: string) => console.error(msg);
-
-  let cookieMap = await readGeminiCookieMapFromDisk({ cookiePath: options.cookiePath, log });
-  if (await isCookieMapValid(cookieMap)) return cookieMap;
-
-  log('[gemini-web] No valid cookies found. Opening browser to sync Gemini cookies...');
-  cookieMap = await getGeminiCookieMapViaChrome({ userDataDir: options.profileDir, log });
-  await writeGeminiCookieMapToDisk(cookieMap, { cookiePath: options.cookiePath, log });
-  return cookieMap;
+function normalizeOutputImagePath(p: string): string {
+  const full = path.resolve(p);
+  const ext = path.extname(full);
+  if (ext) return full;
+  return `${full}.png`;
 }
 
-function resolveModel(value: string): 'gemini-3-pro' | 'gemini-2.5-pro' | 'gemini-2.5-flash' {
-  const desired = value.trim();
-  if (!desired) return 'gemini-3-pro';
-  switch (desired) {
-    case 'gemini-3-pro':
-    case 'gemini-3.0-pro':
-      return 'gemini-3-pro';
-    case 'gemini-2.5-pro':
-      return 'gemini-2.5-pro';
-    case 'gemini-2.5-flash':
-      return 'gemini-2.5-flash';
-    default:
-      console.error(`[gemini-web] Unsupported model "${desired}", falling back to gemini-3-pro.`);
-      return 'gemini-3-pro';
-  }
-}
-
-function resolveImageOutputPath(value: string | undefined): string | null {
-  if (value == null) return null;
-  const trimmed = value.trim();
-  const raw = trimmed || 'generated.png';
-  const resolved = path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
-
-  if (resolved.endsWith(path.sep)) return path.join(resolved, 'generated.png');
+async function loadSession(id: string): Promise<SessionRecord | null> {
+  const p = resolveGeminiWebSessionPath(id);
   try {
-    if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-      return path.join(resolved, 'generated.png');
+    const raw = await readFile(p, 'utf8');
+    const j = JSON.parse(raw) as unknown;
+    if (!j || typeof j !== 'object') return null;
+
+    const sid = (typeof (j as any).id === 'string' && (j as any).id.trim()) || (typeof (j as any).sessionId === 'string' && (j as any).sessionId.trim()) || id;
+    const metadata = normalizeSessionMetadata((j as any).metadata ?? (j as any).chatMetadata ?? j);
+    const messages = Array.isArray((j as any).messages) ? ((j as any).messages as SessionRecord['messages']) : [];
+    const createdAt =
+      typeof (j as any).createdAt === 'string'
+        ? ((j as any).createdAt as string)
+        : typeof (j as any).updatedAt === 'string'
+          ? ((j as any).updatedAt as string)
+          : new Date().toISOString();
+    const updatedAt = typeof (j as any).updatedAt === 'string' ? ((j as any).updatedAt as string) : createdAt;
+
+    return {
+      id: sid,
+      metadata,
+      messages,
+      createdAt,
+      updatedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function saveSession(rec: SessionRecord): Promise<void> {
+  const dir = resolveGeminiWebSessionsDir();
+  await mkdir(dir, { recursive: true });
+  const p = resolveGeminiWebSessionPath(rec.id);
+  const tmp = `${p}.tmp.${Date.now()}`;
+  await writeFile(tmp, JSON.stringify(rec, null, 2), 'utf8');
+  await fs.promises.rename(tmp, p);
+}
+
+async function listSessions(): Promise<SessionRecord[]> {
+  const dir = resolveGeminiWebSessionsDir();
+  try {
+    const names = await readdir(dir);
+    const items: Array<{ path: string; st: number }> = [];
+    for (const n of names) {
+      if (!n.endsWith('.json')) continue;
+      const p = path.join(dir, n);
+      try {
+        const s = await stat(p);
+        items.push({ path: p, st: s.mtimeMs });
+      } catch {}
     }
+
+    items.sort((a, b) => b.st - a.st);
+    const out: SessionRecord[] = [];
+    for (const it of items.slice(0, 100)) {
+      try {
+        const raw = await readFile(it.path, 'utf8');
+        const j = JSON.parse(raw) as any;
+        const id =
+          (typeof j?.id === 'string' && j.id.trim()) ||
+          (typeof j?.sessionId === 'string' && j.sessionId.trim()) ||
+          path.basename(it.path, '.json');
+        out.push({
+          id,
+          metadata: normalizeSessionMetadata(j?.metadata ?? j?.chatMetadata ?? j),
+          messages: Array.isArray(j?.messages) ? j.messages : [],
+          createdAt:
+            typeof j?.createdAt === 'string'
+              ? j.createdAt
+              : typeof j?.updatedAt === 'string'
+                ? j.updatedAt
+                : new Date(it.st).toISOString(),
+          updatedAt: typeof j?.updatedAt === 'string' ? j.updatedAt : new Date(it.st).toISOString(),
+        });
+      } catch {}
+    }
+
+    out.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    return out.slice(0, 100);
   } catch {
-    // ignore
+    return [];
   }
-  return resolved;
+}
+
+function formatJson(out: ModelOutput, extra?: Record<string, unknown>): string {
+  const candidates = out.candidates.map((c) => ({
+    rcid: c.rcid,
+    text: c.text,
+    thoughts: c.thoughts,
+    images: c.images.map((img) => ({
+      url: img.url,
+      title: img.title,
+      alt: img.alt,
+      kind: img instanceof GeneratedImage ? 'generated' : 'web',
+    })),
+  }));
+
+  return JSON.stringify(
+    {
+      text: out.text,
+      thoughts: out.thoughts,
+      metadata: out.metadata,
+      chosen: out.chosen,
+      candidates,
+      ...extra,
+    },
+    null,
+    2,
+  );
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const cookiePath = args.cookiePath ?? resolveGeminiWebCookiePath();
-  const profileDir = args.profileDir ?? resolveGeminiWebChromeProfileDir();
+
+  if (args.cookiePath) process.env.GEMINI_WEB_COOKIE_PATH = args.cookiePath;
+  if (args.profileDir) process.env.GEMINI_WEB_CHROME_PROFILE_DIR = args.profileDir;
+
+  const cookiePath = resolveGeminiWebCookiePath();
+  const profileDir = resolveGeminiWebChromeProfileDir();
+
+  if (args.help) {
+    printUsage(cookiePath, profileDir);
+    return;
+  }
 
   if (args.listSessions) {
-    const sessions = await listSessions();
-    if (sessions.length === 0) {
-      console.log('No saved sessions.');
-    } else {
-      for (const { id, updatedAt } of sessions) {
-        console.log(`${id}\t${updatedAt}`);
-      }
+    const ss = await listSessions();
+    for (const s of ss) {
+      const n = s.messages.length;
+      const last = s.messages.slice(-1)[0];
+      const lastLine = last?.content ? String(last.content).split('\n')[0] : '';
+      console.log(`${s.id}\t${s.updatedAt}\t${n}\t${lastLine}`);
     }
     return;
   }
 
-  if (args.loginOnly) {
-    await ensureGeminiCookieMap({ cookiePath, profileDir });
+  if (args.login) {
+    process.env.GEMINI_WEB_LOGIN = '1';
+    const c = new GeminiClient();
+    await c.init({ verbose: true });
+    await c.close();
+    if (!args.json) console.log(`Cookie refreshed: ${cookiePath}`);
+    else console.log(JSON.stringify({ ok: true, cookiePath }, null, 2));
     return;
   }
 
-  const promptFromFiles = args.promptFiles ? readPromptFiles(args.promptFiles) : null;
-  const promptFromArgs = promptFromFiles || args.prompt;
-  const prompt = promptFromArgs || (await readPromptFromStdin());
-  if (!prompt) printUsage(1);
+  let prompt: string | null = args.prompt;
+  if (!prompt && args.promptFiles.length > 0) prompt = await readPromptFromFiles(args.promptFiles);
+  if (!prompt) prompt = await readPromptFromStdin();
 
-  const sessionData = args.sessionId ? await readSession(args.sessionId) : null;
-  const chatMetadata = sessionData?.metadata ?? null;
+  if (!prompt) {
+    printUsage(cookiePath, profileDir);
+    process.exitCode = 1;
+    return;
+  }
 
-  let cookieMap = await ensureGeminiCookieMap({ cookiePath, profileDir });
+  const model = resolveModel(args.modelId);
 
-  const desiredModel = resolveModel(args.model || 'gemini-3-pro');
-  const imagePath = resolveImageOutputPath(args.imagePath);
-  const referenceImages = (args.referenceImages ?? []).map((p) =>
-    path.isAbsolute(p) ? p : path.resolve(process.cwd(), p),
-  );
-
+  const c = new GeminiClient();
+  await c.init({ verbose: false });
   try {
-    const controller = new AbortController();
-    const timeoutMs = imagePath ? 300_000 : 120_000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let sess: SessionRecord | null = null;
+    let chat = null as any;
 
-    try {
-      const effectivePrompt = imagePath ? `Generate an image: ${prompt}` : prompt;
-      const out = await runGeminiWebWithFallback({
-        prompt: effectivePrompt,
-        files: referenceImages,
-        model: desiredModel,
-        cookieMap,
-        chatMetadata,
-        signal: controller.signal,
-      });
-
-      if (args.sessionId && out.metadata) {
-        await writeSession(args.sessionId, out.metadata, prompt, out.text ?? '', out.errorMessage);
-      }
-
-      let imageSaved = false;
-      let imageCount = 0;
-      if (imagePath) {
-        const save = await saveFirstGeminiImageFromOutput(out, cookieMap, imagePath, controller.signal);
-        imageSaved = save.saved;
-        imageCount = save.imageCount;
-        if (!imageSaved) {
-          throw new Error(`No images generated. Response text:\n${out.text || '(empty response)'}`);
-        }
-      }
-
-      if (args.json) {
-        const jsonOut = { ...out, ...(imagePath && { imageSaved, imageCount, imagePath }), ...(args.sessionId && { sessionId: args.sessionId }) };
-        process.stdout.write(`${JSON.stringify(jsonOut, null, 2)}\n`);
-        if (out.errorMessage) process.exit(1);
-        return;
-      }
-
-      if (out.errorMessage) {
-        throw new Error(out.errorMessage);
-      }
-
-      process.stdout.write(out.text ?? '');
-      if (!out.text?.endsWith('\n')) process.stdout.write('\n');
-      if (imagePath) {
-        process.stdout.write(`Saved image (${imageCount || 1}) to: ${imagePath}\n`);
-      }
-      return;
-    } finally {
-      clearTimeout(timeout);
+    if (args.sessionId) {
+      sess = (await loadSession(args.sessionId)) ?? {
+        id: args.sessionId,
+        metadata: [null, null, null],
+        messages: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      chat = c.start_chat({ metadata: sess.metadata, model });
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
 
-    if (message.includes('Unable to locate Gemini access token')) {
-      console.error('[gemini-web] Cookies may be expired. Re-opening browser to refresh cookies...');
-      await sleep(500);
-      cookieMap = await getGeminiCookieMapViaChrome({ userDataDir: profileDir, log: (m) => console.error(m) });
-      await writeGeminiCookieMapToDisk(cookieMap, { cookiePath, log: (m) => console.error(m) });
+    const files = args.referenceImages.length > 0 ? args.referenceImages : null;
 
-      const controller = new AbortController();
-      const timeoutMs = imagePath ? 300_000 : 120_000;
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let out: ModelOutput;
+    if (chat) out = await chat.send_message(prompt, files);
+    else out = await c.generate_content(prompt, files, model);
 
-      try {
-        const out = await runGeminiWebWithFallback({
-          prompt: imagePath ? `Generate an image: ${prompt}` : prompt,
-          files: referenceImages,
-          model: desiredModel,
-          cookieMap,
-          chatMetadata,
-          signal: controller.signal,
-        });
+    let savedImage: string | null = null;
+    if (args.imagePath) {
+      const p = normalizeOutputImagePath(args.imagePath);
+      const dir = path.dirname(p);
+      await mkdir(dir, { recursive: true });
 
-        if (args.sessionId && out.metadata) {
-          await writeSession(args.sessionId, out.metadata, prompt, out.text ?? '', out.errorMessage);
-        }
+      const img = out.images[0];
+      if (!img) {
+        throw new Error('No image returned in response.');
+      }
 
-        let imageSaved = false;
-        let imageCount = 0;
-        if (imagePath) {
-          const save = await saveFirstGeminiImageFromOutput(out, cookieMap, imagePath, controller.signal);
-          imageSaved = save.saved;
-          imageCount = save.imageCount;
-          if (!imageSaved) {
-            throw new Error(`No images generated. Response text:\n${out.text || '(empty response)'}`);
-          }
-        }
+      const fn = path.basename(p);
+      const dp = dir;
 
-        if (args.json) {
-          const jsonOut = { ...out, ...(imagePath && { imageSaved, imageCount, imagePath }), ...(args.sessionId && { sessionId: args.sessionId }) };
-          process.stdout.write(`${JSON.stringify(jsonOut, null, 2)}\n`);
-          if (out.errorMessage) process.exit(1);
-          return;
-        }
-
-        if (out.errorMessage) {
-          throw new Error(out.errorMessage);
-        }
-
-        process.stdout.write(out.text ?? '');
-        if (!out.text?.endsWith('\n')) process.stdout.write('\n');
-        if (imagePath) {
-          process.stdout.write(`Saved image (${imageCount || 1}) to: ${imagePath}\n`);
-        }
-        return;
-      } finally {
-        clearTimeout(timeout);
+      if (img instanceof GeneratedImage) {
+        savedImage = await img.save(dp, fn, undefined, false, false, true);
+      } else {
+        savedImage = await img.save(dp, fn, c.cookies, false, false);
       }
     }
 
-    throw error;
+    if (sess && args.sessionId) {
+      const now = new Date().toISOString();
+      sess.updatedAt = now;
+      sess.metadata = (chat?.metadata ?? sess.metadata).slice(0, 3);
+      sess.messages.push({ role: 'user', content: prompt, timestamp: now });
+      sess.messages.push({ role: 'assistant', content: out.text ?? '', timestamp: now });
+      await saveSession(sess);
+    }
+
+    if (args.json) {
+      console.log(formatJson(out, { savedImage, sessionId: args.sessionId, model: model.model_name }));
+    } else if (args.imagePath) {
+      console.log(savedImage ?? '');
+    } else {
+      console.log(out.text);
+    }
+  } finally {
+    await c.close();
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+main().catch((e) => {
+  const msg = e instanceof Error ? e.message : String(e);
+  console.error(msg);
   process.exit(1);
 });

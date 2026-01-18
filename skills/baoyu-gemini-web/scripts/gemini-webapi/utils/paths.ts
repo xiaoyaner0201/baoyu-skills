@@ -43,3 +43,4 @@ export function resolveGeminiWebSessionPath(name: string): string {
   const sanitized = name.replace(/[^a-zA-Z0-9_-]/g, '_');
   return path.join(resolveGeminiWebSessionsDir(), `${sanitized}.json`);
 }
+

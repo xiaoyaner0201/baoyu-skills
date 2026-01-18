@@ -2,6 +2,11 @@
 
 English | [中文](./CHANGELOG.zh.md)
 
+## 0.8.1 - 2026-01-17
+
+### Refactor
+- `baoyu-gemini-web`: refactors script architecture—consolidates 10 separate files into a structured `gemini-webapi/` module (TypeScript port of gemini_webapi Python library).
+
 ## 0.8.0 - 2026-01-17
 
 ### Features
