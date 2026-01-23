@@ -2,6 +2,11 @@
 
 English | [中文](./CHANGELOG.zh.md)
 
+## 1.18.1 - 2026-01-23
+
+### Documentation
+- `baoyu-slide-deck`: adds detailed sub-steps (1.1-1.3) to progress checklist, marks Step 1.3 as required with explicit Bash check command for existing directory detection.
+
 ## 1.18.0 - 2026-01-23
 
 ### Features

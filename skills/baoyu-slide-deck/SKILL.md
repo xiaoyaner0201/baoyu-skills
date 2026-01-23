@@ -166,6 +166,9 @@ Copy this checklist and check off items as you complete them:
 ```
 Slide Deck Progress:
 - [ ] Step 1: Setup & Analyze
+  - [ ] 1.1 Load preferences
+  - [ ] 1.2 Analyze content
+  - [ ] 1.3 Check existing ⚠️ REQUIRED
 - [ ] Step 2: Confirmation ⚠️ REQUIRED (Round 1, optional Round 2)
 - [ ] Step 3: Generate outline
 - [ ] Step 4: Review outline (conditional)
@@ -229,9 +232,15 @@ Schema: `references/config/preferences-schema.md`
 5. Determine recommended slide count
 6. Generate topic slug from content
 
-**1.3 Check Existing Content**
+**1.3 Check Existing Content** ⚠️ REQUIRED
 
-Check if `slide-deck/{topic-slug}/` directory already exists.
+**MUST execute before proceeding to Step 2.**
+
+Use Bash to check if output directory exists:
+
+```bash
+test -d "slide-deck/{topic-slug}" && echo "exists"
+```
 
 **If directory exists**, use AskUserQuestion:
 
