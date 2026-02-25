@@ -2,6 +2,12 @@
 
 English | [中文](./CHANGELOG.zh.md)
 
+## 1.34.2 - 2026-02-25
+
+### Documentation
+- `baoyu-markdown-to-html`: clarify theme resolution order with local and cross-skill EXTEND.md fallbacks before prompting user.
+- `baoyu-post-to-wechat`: align markdown conversion theme handling with deterministic fallback (`CLI --theme` -> EXTEND.md `default_theme` -> `default`) and require explicit `--theme` parameter.
+
 ## 1.34.1 - 2026-02-20
 
 ### Fixes

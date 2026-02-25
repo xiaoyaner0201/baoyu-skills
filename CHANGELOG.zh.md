@@ -2,6 +2,12 @@
 
 [English](./CHANGELOG.md) | 中文
 
+## 1.34.2 - 2026-02-25
+
+### 文档
+- `baoyu-markdown-to-html`：明确主题解析优先级，先读取本技能与跨技能 EXTEND.md 的 `default_theme`，仅在未命中时询问用户。
+- `baoyu-post-to-wechat`：统一 markdown 转 HTML 的主题解析回退链（CLI `--theme` -> EXTEND.md `default_theme` -> `default`），并强制始终显式传入 `--theme` 参数。
+
 ## 1.34.1 - 2026-02-20
 
 ### 修复
