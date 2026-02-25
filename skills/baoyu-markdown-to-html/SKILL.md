@@ -68,9 +68,24 @@ Use `AskUserQuestion` to ask whether to format first. Formatting can fix:
 
 **If user declines**: Continue with original file.
 
-### Step 1: Confirm Theme
+### Step 1: Determine Theme
 
-Before converting, use AskUserQuestion to confirm the theme (unless user already specified):
+**Theme resolution order** (first match wins):
+1. User explicitly specified theme (CLI `--theme` or conversation)
+2. EXTEND.md `default_theme` (this skill's own EXTEND.md, checked in Step 0)
+3. `baoyu-post-to-wechat` EXTEND.md `default_theme` (cross-skill fallback)
+4. If none found → use AskUserQuestion to confirm
+
+**Cross-skill EXTEND.md check** (only if this skill's EXTEND.md has no `default_theme`):
+
+```bash
+# Check baoyu-post-to-wechat EXTEND.md for default_theme
+test -f "$HOME/.baoyu-skills/baoyu-post-to-wechat/EXTEND.md" && grep -o 'default_theme:.*' "$HOME/.baoyu-skills/baoyu-post-to-wechat/EXTEND.md"
+```
+
+**If theme is resolved from EXTEND.md**: Use it directly, do NOT ask the user.
+
+**If no default found**: Use AskUserQuestion to confirm:
 
 | Theme | Description |
 |-------|-------------|
