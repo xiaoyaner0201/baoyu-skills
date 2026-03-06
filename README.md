@@ -55,7 +55,7 @@ Simply tell Claude Code:
 |--------|-------------|--------|
 | **content-skills** | Content generation and publishing | [xhs-images](#baoyu-xhs-images), [infographic](#baoyu-infographic), [cover-image](#baoyu-cover-image), [slide-deck](#baoyu-slide-deck), [comic](#baoyu-comic), [article-illustrator](#baoyu-article-illustrator), [post-to-x](#baoyu-post-to-x), [post-to-wechat](#baoyu-post-to-wechat) |
 | **ai-generation-skills** | AI-powered generation backends | [image-gen](#baoyu-image-gen), [danger-gemini-web](#baoyu-danger-gemini-web) |
-| **utility-skills** | Utility tools for content processing | [url-to-markdown](#baoyu-url-to-markdown), [danger-x-to-markdown](#baoyu-danger-x-to-markdown), [compress-image](#baoyu-compress-image), [format-markdown](#baoyu-format-markdown) |
+| **utility-skills** | Utility tools for content processing | [url-to-markdown](#baoyu-url-to-markdown), [danger-x-to-markdown](#baoyu-danger-x-to-markdown), [compress-image](#baoyu-compress-image), [format-markdown](#baoyu-format-markdown), [translate](#baoyu-translate) |
 
 ## Update Skills
 
@@ -738,6 +738,30 @@ Format plain text or markdown files with proper frontmatter, titles, summaries, 
 | Parallel items | `-` unordered or `1.` ordered lists |
 | Code/commands | `` `inline` `` or ` ```block``` ` |
 | Quotes | `>` blockquote |
+
+#### baoyu-translate
+
+Translate articles and documents between languages with three modes: quick (direct), normal (analysis-informed), and refined (full publication-quality workflow).
+
+```bash
+# Normal mode (default) - analyze then translate
+/translate article.md --to zh-CN
+
+# Quick mode - direct translation
+/translate article.md --mode quick --to ja
+
+# Refined mode - full workflow with review and polish
+/translate article.md --mode refined --to zh-CN
+```
+
+**Modes**:
+| Mode | Steps | Use Case |
+|------|-------|----------|
+| Quick | Translate | Short texts, informal content |
+| Normal | Analyze → Translate | Articles, blog posts |
+| Refined | Analyze → Translate → Review → Polish | Publication-quality documents |
+
+**Features**: Custom glossaries via EXTEND.md, audience-aware translation (general/technical/academic/business), automatic chunking for long documents with parallel subagent translation.
 
 ## Environment Configuration
 

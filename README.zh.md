@@ -55,7 +55,7 @@ npx skills add jimliu/baoyu-skills
 |------|------|----------|
 | **content-skills** | 内容生成和发布 | [xhs-images](#baoyu-xhs-images), [infographic](#baoyu-infographic), [cover-image](#baoyu-cover-image), [slide-deck](#baoyu-slide-deck), [comic](#baoyu-comic), [article-illustrator](#baoyu-article-illustrator), [post-to-x](#baoyu-post-to-x), [post-to-wechat](#baoyu-post-to-wechat) |
 | **ai-generation-skills** | AI 生成后端 | [image-gen](#baoyu-image-gen), [danger-gemini-web](#baoyu-danger-gemini-web) |
-| **utility-skills** | 内容处理工具 | [url-to-markdown](#baoyu-url-to-markdown), [danger-x-to-markdown](#baoyu-danger-x-to-markdown), [compress-image](#baoyu-compress-image), [format-markdown](#baoyu-format-markdown) |
+| **utility-skills** | 内容处理工具 | [url-to-markdown](#baoyu-url-to-markdown), [danger-x-to-markdown](#baoyu-danger-x-to-markdown), [compress-image](#baoyu-compress-image), [format-markdown](#baoyu-format-markdown), [translate](#baoyu-translate) |
 
 ## 更新技能
 
@@ -738,6 +738,30 @@ AI 驱动的生成后端。
 | 并列要点 | `-` 无序列表或 `1.` 有序列表 |
 | 代码/命令 | `` `行内` `` 或 ` ```代码块``` ` |
 | 引用 | `>` 引用块 |
+
+#### baoyu-translate
+
+三模式翻译技能：快速（直接翻译）、标准（分析后翻译）、精翻（完整出版级工作流，含审校与润色）。
+
+```bash
+# 标准模式（默认）- 先分析再翻译
+/translate article.md --to zh-CN
+
+# 快速模式 - 直接翻译
+/translate article.md --mode quick --to ja
+
+# 精翻模式 - 完整工作流，含审校与润色
+/translate article.md --mode refined --to zh-CN
+```
+
+**模式**：
+| 模式 | 步骤 | 适用场景 |
+|------|------|----------|
+| 快速 | 翻译 | 短文本、非正式内容 |
+| 标准 | 分析 → 翻译 | 文章、博客 |
+| 精翻 | 分析 → 翻译 → 审校 → 润色 | 出版级文档 |
+
+**特性**：通过 EXTEND.md 自定义术语表、面向受众的翻译（通用/技术/学术/商务）、长文档自动分块并行翻译。
 
 ## 环境配置
 
