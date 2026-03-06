@@ -2,6 +2,12 @@
 
 [English](./CHANGELOG.md) | 中文
 
+## 1.51.0 - 2026-03-06
+
+### 新功能
+- `baoyu-post-to-weibo`：新增微博发布技能——支持带图文本发布和头条文章，通过 Chrome CDP 自动化操作
+- `baoyu-format-markdown`：新增标题/摘要多候选项选择——生成 3 个候选供用户选择，支持 EXTEND.md 中的 `auto_select` 配置
+
 ## 1.50.0 - 2026-03-06
 
 ### 新功能

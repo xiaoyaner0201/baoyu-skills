@@ -2,6 +2,12 @@
 
 English | [中文](./CHANGELOG.zh.md)
 
+## 1.51.0 - 2026-03-06
+
+### Features
+- `baoyu-post-to-weibo`: new skill for posting to Weibo — supports text posts with images and headline articles (头条文章) via Chrome CDP
+- `baoyu-format-markdown`: add title/summary multi-candidate selection — generates 3 candidates for user to pick, with `auto_select` EXTEND.md support
+
 ## 1.50.0 - 2026-03-06
 
 ### Features
