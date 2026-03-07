@@ -2,6 +2,16 @@
 
 English | [中文](./CHANGELOG.zh.md)
 
+## 1.52.0 - 2026-03-06
+
+### Features
+- `baoyu-post-to-weibo`: add video upload support via `--video` flag (max 18 files total)
+- `baoyu-post-to-weibo`: switch from clipboard paste to `DOM.setFileInputFiles` for more reliable uploads
+
+### Fixes
+- `baoyu-post-to-weibo`: add Chrome health check with auto-restart for unresponsive instances
+- `baoyu-post-to-weibo`: add navigation check to ensure Weibo home page before posting
+
 ## 1.51.2 - 2026-03-06
 
 ### Fixes

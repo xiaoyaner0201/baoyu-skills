@@ -2,6 +2,16 @@
 
 [English](./CHANGELOG.md) | 中文
 
+## 1.52.0 - 2026-03-06
+
+### 新功能
+- `baoyu-post-to-weibo`：新增 `--video` 视频上传支持（图片+视频最多 18 个文件）
+- `baoyu-post-to-weibo`：上传方式从剪贴板粘贴改为 `DOM.setFileInputFiles`，提升上传可靠性
+
+### 修复
+- `baoyu-post-to-weibo`：新增 Chrome 健康检查，无响应时自动重启
+- `baoyu-post-to-weibo`：发布前检查页面是否在微博首页，避免在错误页面操作
+
 ## 1.51.2 - 2026-03-06
 
 ### 修复
